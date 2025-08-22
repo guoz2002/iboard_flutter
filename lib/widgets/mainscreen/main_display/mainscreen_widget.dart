@@ -1320,7 +1320,7 @@ class MainScreenWidgetState extends State<MainScreenWidget> {
                         "讀取中...")) // Show loading text if initially loading and no data yet
                 : filteredAnnouncements.isEmpty
                     ? const Center(
-                        child: Text('没有任何通告.')) // Updated for all types
+                        child: Text('暫無通告')) // 改為繁體中文
                     : ListView.builder(
                         itemCount: filteredAnnouncements.length,
                         itemBuilder: (context, index) {

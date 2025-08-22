@@ -76,6 +76,11 @@ class AnnouncementPageState extends State<AnnouncementPage> {
         if (appState == AppState.manualOperation) {
           announcementCarouselProvider.jumpToAnnouncementIndex(0);
         }
+        
+        // 如果从全屏广告状态切换到默认状态，确保从主屏幕开始轮播
+        if (appState == AppState.defaultState && _previousAppState == AppState.fullscreenAd) {
+          // 不需要跳转到主屏幕，因为resumeMidCarousel会处理索引恢复
+        }
       }
 
       switch (appState) {
@@ -408,7 +413,7 @@ class AnnouncementPageState extends State<AnnouncementPage> {
 
     // 获取API配置的通告停留时间
     final apiNoticeStayDuration = carouselStateProvider.noticeStayDuration;
-    final delayBeforeNotice = carouselStateProvider.noActivityTimeout;
+    final delayBeforeNotice = carouselStateProvider.normalToAnnouncementCarouselDuration;
 
     // 初始化通告轮播
     announcementCarouselProvider.initializeMidWidgets(
@@ -735,8 +740,8 @@ class AnnouncementPageState extends State<AnnouncementPage> {
                                 announcementCarouselProvider
                                     .hideArrearTableWidget(
                                   () {},
-                                  10, // 简化参数
-                                  10,
+                                  carouselStateProvider.noticeStayDuration,
+                                  carouselStateProvider.normalToAnnouncementCarouselDuration,
                                 );
                                 // _logger.i(
                                 //     '🏠 [MainScreenPage Overlay] 欠费总览覆盖层已隐藏');
