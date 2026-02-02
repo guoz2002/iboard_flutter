@@ -41,15 +41,76 @@ class RthkNewsProvider extends ChangeNotifier {
   int get newsCount => _newsList.length;
   bool get isScrollingPaused => _isScrollingPaused;
 
+  // 🔧 測試開關：設為 true 使用模擬數據，設為 false 使用 API
+  // ⚠️ 注意：使用 API 需要能訪問 rthk9.rthk.hk（大陸需要開啟 VPN）
+  static const bool _useSimulatedData = false;
+
   RthkNewsProvider(this._apiClient) {
     _logger.i('🔍 RthkNewsProvider 初始化完成');
     _initializeData();
-    _startUpdateTimer();
+    if (!_useSimulatedData) {
+      _startUpdateTimer();
+    }
   }
 
   ///1, 初始化数据
   Future<void> _initializeData() async {
-    await _loadFromLocalStorage();
+    if (_useSimulatedData) {
+      _logger.i('🧪 使用模擬數據模式');
+      _loadSimulatedData();
+    } else {
+      await _loadFromLocalStorage();
+    }
+  }
+
+  ///1.1, 加載模擬數據（測試用）
+  void _loadSimulatedData() {
+    final now = DateTime.now();
+    _newsList = [
+      RthkNewsModel(
+        title: '政府宣布新一輪消費券計劃將於下月推出，預計惠及全港市民',
+        guid: 'mock_news_001',
+        link: 'https://news.rthk.hk/mock1',
+        pubDate: now.subtract(const Duration(minutes: 5)),
+        formattedTime: _formatTime(now.subtract(const Duration(minutes: 5))),
+      ),
+      RthkNewsModel(
+        title: '天文台預測本週末氣溫將急降至15度，市民應注意保暖',
+        guid: 'mock_news_002',
+        link: 'https://news.rthk.hk/mock2',
+        pubDate: now.subtract(const Duration(minutes: 15)),
+        formattedTime: _formatTime(now.subtract(const Duration(minutes: 15))),
+      ),
+      RthkNewsModel(
+        title: '港鐵東鐵綫訊號故障已修復，列車服務逐步恢復正常',
+        guid: 'mock_news_003',
+        link: 'https://news.rthk.hk/mock3',
+        pubDate: now.subtract(const Duration(minutes: 30)),
+        formattedTime: _formatTime(now.subtract(const Duration(minutes: 30))),
+      ),
+      RthkNewsModel(
+        title: '本港新增確診個案回落至三位數，專家指疫情趨穩定',
+        guid: 'mock_news_004',
+        link: 'https://news.rthk.hk/mock4',
+        pubDate: now.subtract(const Duration(minutes: 45)),
+        formattedTime: _formatTime(now.subtract(const Duration(minutes: 45))),
+      ),
+      RthkNewsModel(
+        title: '財政司司長發表最新經濟報告，預計本年度GDP增長達3.5%',
+        guid: 'mock_news_005',
+        link: 'https://news.rthk.hk/mock5',
+        pubDate: now.subtract(const Duration(hours: 1)),
+        formattedTime: _formatTime(now.subtract(const Duration(hours: 1))),
+      ),
+    ];
+    _lastUpdateTime = now;
+    _logger.i('🧪 已加載 ${_newsList.length} 條模擬新聞數據');
+    notifyListeners();
+  }
+
+  ///1.2, 格式化時間為 HH:mm
+  String _formatTime(DateTime dateTime) {
+    return '${dateTime.hour.toString().padLeft(2, '0')}:${dateTime.minute.toString().padLeft(2, '0')}';
   }
 
   ///2, 从本地存储加载新闻数据
@@ -164,6 +225,13 @@ class RthkNewsProvider extends ChangeNotifier {
 
   ///6, 获取RTHK新闻数据
   Future<void> fetchRthkNews({bool forceUpdate = false}) async {
+    // 🔧 模擬數據模式下跳過 API 請求
+    if (_useSimulatedData) {
+      _logger.i('🧪 模擬數據模式，跳過 API 請求');
+      _loadSimulatedData();
+      return;
+    }
+
     // 如果不是强制更新，检查是否需要更新
     if (!forceUpdate && _lastUpdateTime != null) {
       final timeSinceLastUpdate = DateTime.now().difference(_lastUpdateTime!);

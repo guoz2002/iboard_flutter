@@ -81,18 +81,48 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
     if (!_scrollController.hasClients || _isAnimating) return;
 
     final maxScrollExtent = _scrollController.position.maxScrollExtent;
-    if (maxScrollExtent <= 0) return;
-
-    // 简化速度控制 - 恢复历史版本的稳定算法
-    const scrollSpeed = 40.0; // 固定滚动速度 (像素/秒)
-    final durationSeconds = (maxScrollExtent / scrollSpeed).ceil(); // 向上取整确保完整滚动
     
-    // 设置合理的时长范围 (10-120秒)
-    final clampedDuration = durationSeconds.clamp(10, 120);
+    // 🔧 修復：確保 maxScrollExtent 有效
+    // 當 API 返回新數據後，ListView 可能還沒完成 layout
+    // 此時 maxScrollExtent 會是 0 或很小的值，導致速度計算錯誤
+    if (maxScrollExtent <= 100) {
+      // 如果內容寬度太小，說明 layout 還沒完成，延遲重試
+      logger.d('新聞跑馬燈 - maxScrollExtent 過小 ($maxScrollExtent)，等待 layout 完成...');
+      Future.delayed(const Duration(milliseconds: 300), () {
+        if (mounted && !_isAnimating && !_isPaused) {
+          _startScrolling();
+        }
+      });
+      return;
+    }
+
+    // 🔧 修復：使用固定的「螢幕寬度滾動時間」來計算速度
+    // 這樣無論螢幕大小或內容多少，視覺速度感受都一致
+    // 基準：內容滾過一個螢幕寬度需要 12 秒
+    const double secondsPerScreenWidth = 12.0;
+    
+    final double containerWidth = widget.width > 0 ? widget.width : 1920.0;
+    
+    // 計算總滾動內容相當於多少個螢幕寬度
+    final double totalScrollDistance = maxScrollExtent;
+    final double screenWidths = totalScrollDistance / containerWidth;
+    
+    // 計算總動畫時間（至少要讓內容完整滾過一遍）
+    final int durationSeconds = (screenWidths * secondsPerScreenWidth).ceil();
+    
+    // 設置合理的時長範圍 (15-300秒)
+    final clampedDuration = durationSeconds.clamp(15, 300);
     _controller.duration = Duration(seconds: clampedDuration);
 
-    // 添加调试信息
-    logger.d('新闻跑马灯 - 内容宽度: $maxScrollExtent, 动画时长: ${clampedDuration}s, 滚动速度: ${(maxScrollExtent / clampedDuration).toStringAsFixed(1)}px/s');
+    // 計算實際像素速度（用於日誌）
+    final double actualSpeed = maxScrollExtent / clampedDuration;
+
+    // 添加調試信息
+    logger.d('新聞跑馬燈 - 容器寬度: ${containerWidth.toStringAsFixed(0)}px, '
+        '內容寬度: ${maxScrollExtent.toStringAsFixed(0)}px, '
+        '螢幕數: ${screenWidths.toStringAsFixed(1)}, '
+        '實際速度: ${actualSpeed.toStringAsFixed(1)}px/s, '
+        '動畫時長: ${clampedDuration}s');
 
     // 先移除已有監聽器
     _removeListeners();
@@ -162,23 +192,32 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
 
     _previousNewsTexts = List.from(_newsTexts);
 
-    // 防抖：避免频繁更新
-    Future.delayed(const Duration(milliseconds: 100), () {
+    // 🔧 修復：增加防抖延遲，避免 API 返回時頻繁重置動畫
+    Future.delayed(const Duration(milliseconds: 200), () {
       if (!mounted) return;
 
       _totalContentWidth = _calculateTotalWidth(_newsTexts);
       
       setState(() {});
 
-      // 延迟一帧再重新开始动画，确保UI已更新
+      // 🔧 修復：增加足夠的延遲確保 ListView 完成 layout
+      // 這是解決「API 返回後速度變快」的關鍵
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+        
+        // 先停止現有動畫
         _stopScrolling();
         _controller.reset();
         if (_scrollController.hasClients) {
           _scrollController.jumpTo(0);
         }
-        _startScrolling();
+        
+        // 🔧 額外延遲 500ms，確保 ListView 的 maxScrollExtent 已正確計算
+        Future.delayed(const Duration(milliseconds: 500), () {
+          if (mounted && !_isPaused) {
+            _startScrolling();
+          }
+        });
       });
     });
   }
