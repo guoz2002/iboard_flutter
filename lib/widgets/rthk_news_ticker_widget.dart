@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:logger/logger.dart';
 import 'package:provider/provider.dart';
@@ -19,75 +20,58 @@ class RthkNewsTickerWidget extends StatefulWidget {
 
 class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+  late AnimationController _animationController;
   late ScrollController _scrollController;
 
   List<String> _newsTexts = [];
   List<String> _previousNewsTexts = [];
 
   bool _isPaused = false;
-  double _totalContentWidth = 0;
   final Logger logger = Logger();
-  
-  // 监听器变量，确保正确移除
-  VoidCallback? _animationListener;
-  void Function(AnimationStatus)? _animationStatusListener;
+
   bool _isAnimating = false;
+
+  // 固定滾動速度 (邏輯像素/秒) — 這是唯一控制速度的地方
+  static const double _fixedScrollSpeed = 50.0;
+
+  // 防抖 Timer，確保只有最後一次數據變化才觸發重啟滾動
+  Timer? _debounceTimer;
+  // 第二階段防抖 Timer（等待 layout 穩定）
+  Timer? _layoutTimer;
+
+  // 一組新聞的寬度（用於循環跳回）
+  double _oneGroupExtent = 0.0;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
+    // 初始化 AnimationController，duration 會在 _startScrolling 中設置
+    _animationController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 30),
     );
     _scrollController = ScrollController();
   }
 
   @override
   void dispose() {
+    _debounceTimer?.cancel();
+    _layoutTimer?.cancel();
     _stopScrolling();
-    _controller.dispose();
+    _animationController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
-  ///1, 计算所有新闻文本的总宽度
-  double _calculateTotalWidth(List<String> texts) {
-    final textPainter = TextPainter(textDirection: TextDirection.ltr);
-    double totalWidth = 0;
-
-    for (final text in texts) {
-      textPainter.text = TextSpan(
-        text: text,
-        style: const TextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
-          height: 1.2,
-        ),
-      );
-      textPainter.layout();
-      // 为每条新闻添加足够的间距，确保完整显示
-      totalWidth += textPainter.width + 80; // 增加间距从56到80
-    }
-
-    // 确保总宽度至少是容器宽度的2倍，保证滚动效果
-    final minWidth = widget.width * 2;
-    return totalWidth > minWidth ? totalWidth : minWidth;
-  }
-
-  ///2, 啟動滾動動畫
+  ///1, 啟動滾動（AnimationController 驅動，Duration 預計算）
   void _startScrolling() {
     if (!_scrollController.hasClients || _isAnimating) return;
 
     final maxScrollExtent = _scrollController.position.maxScrollExtent;
-    
-    // 🔧 修復：確保 maxScrollExtent 有效
-    // 當 API 返回新數據後，ListView 可能還沒完成 layout
-    // 此時 maxScrollExtent 會是 0 或很小的值，導致速度計算錯誤
+
+    // 等待 layout 完成
     if (maxScrollExtent <= 100) {
-      // 如果內容寬度太小，說明 layout 還沒完成，延遲重試
-      logger.d('新聞跑馬燈 - maxScrollExtent 過小 ($maxScrollExtent)，等待 layout 完成...');
+      logger.d('新聞跑馬燈 - maxScrollExtent 過小 '
+          '($maxScrollExtent)，等待 layout...');
       Future.delayed(const Duration(milliseconds: 300), () {
         if (mounted && !_isAnimating && !_isPaused) {
           _startScrolling();
@@ -96,84 +80,70 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
       return;
     }
 
-    // 🔧 修復：使用固定的「螢幕寬度滾動時間」來計算速度
-    // 這樣無論螢幕大小或內容多少，視覺速度感受都一致
-    // 基準：內容滾過一個螢幕寬度需要 12 秒
-    const double secondsPerScreenWidth = 12.0;
-    
-    final double containerWidth = widget.width > 0 ? widget.width : 1920.0;
-    
-    // 計算總滾動內容相當於多少個螢幕寬度
-    final double totalScrollDistance = maxScrollExtent;
-    final double screenWidths = totalScrollDistance / containerWidth;
-    
-    // 計算總動畫時間（至少要讓內容完整滾過一遍）
-    final int durationSeconds = (screenWidths * secondsPerScreenWidth).ceil();
-    
-    // 設置合理的時長範圍 (15-300秒)
-    final clampedDuration = durationSeconds.clamp(15, 300);
-    _controller.duration = Duration(seconds: clampedDuration);
+    // 計算一組新聞的寬度（ListView itemCount = newsTexts * 3）
+    _oneGroupExtent = maxScrollExtent / 3;
 
-    // 計算實際像素速度（用於日誌）
-    final double actualSpeed = maxScrollExtent / clampedDuration;
+    // 預計算滾完一組所需的時長
+    final durationSeconds = _oneGroupExtent / _fixedScrollSpeed;
+    final duration = Duration(
+      milliseconds: (durationSeconds * 1000).round(),
+    );
 
-    // 添加調試信息
-    logger.d('新聞跑馬燈 - 容器寬度: ${containerWidth.toStringAsFixed(0)}px, '
-        '內容寬度: ${maxScrollExtent.toStringAsFixed(0)}px, '
-        '螢幕數: ${screenWidths.toStringAsFixed(1)}, '
-        '實際速度: ${actualSpeed.toStringAsFixed(1)}px/s, '
-        '動畫時長: ${clampedDuration}s');
+    logger.d('新聞跑馬燈 [AnimationController] - '
+        '速度: $_fixedScrollSpeed px/s, '
+        '一組距離: ${_oneGroupExtent.toStringAsFixed(0)}px, '
+        '預計耗時: ${durationSeconds.toStringAsFixed(1)}s, '
+        '新聞: ${_newsTexts.length}條');
 
-    // 先移除已有監聽器
-    _removeListeners();
+    // 重置到起點
+    _scrollController.jumpTo(0);
 
-    // 定义新的监听器
-    _animationListener = () {
-      if (!_isPaused && _scrollController.hasClients) {
-        final offset = _controller.value * maxScrollExtent;
-        if (offset <= maxScrollExtent) {
-          _scrollController.jumpTo(offset);
-        }
-      }
-    };
+    // 配置 AnimationController
+    _animationController.duration = duration;
+    _animationController.reset();
 
-    _animationStatusListener = (AnimationStatus status) {
-      if (status == AnimationStatus.completed && mounted) {
-        _controller.reset();
-        if (!_isPaused) {
-          _controller.forward();
-        }
-      }
-    };
-
-    // 添加新監聽器
-    _controller.addListener(_animationListener!);
-    _controller.addStatusListener(_animationStatusListener!);
-    
     _isAnimating = true;
-    _controller.forward();
+
+    // 監聽動畫值變化，映射到 scrollController 的 offset
+    _animationController.addListener(_onAnimationTick);
+
+    // 監聽動畫狀態，完成後無縫循環
+    _animationController.addStatusListener(_onAnimationStatus);
+
+    // 開始線性動畫
+    _animationController.forward();
   }
 
-  ///3, 移除动画监听器
-  void _removeListeners() {
-    if (_animationListener != null) {
-      _controller.removeListener(_animationListener!);
-      _animationListener = null;
-    }
-    if (_animationStatusListener != null) {
-      _controller.removeStatusListener(_animationStatusListener!);
-      _animationStatusListener = null;
+  ///1.1, 動畫值變化回調：將 animation.value 映射到滾動偏移
+  void _onAnimationTick() {
+    if (!_scrollController.hasClients || _isPaused) return;
+
+    final offset = _animationController.value * _oneGroupExtent;
+    final maxSE = _scrollController.position.maxScrollExtent;
+    final safeOffset = offset.clamp(0.0, maxSE);
+    _scrollController.jumpTo(safeOffset);
+  }
+
+  ///1.2, 動畫狀態回調：完成時跳回起點並重新播放（無縫循環）
+  void _onAnimationStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed) {
+      // 跳回起點，重新播放，實現無縫循環
+      _scrollController.jumpTo(0);
+      _animationController.reset();
+      _animationController.forward();
     }
   }
 
-  ///4, 停止滚动动画
+  ///2, 停止滾動
   void _stopScrolling() {
     _isAnimating = false;
-    _controller.stop();
-    _removeListeners();
+    _animationController.removeListener(_onAnimationTick);
+    _animationController.removeStatusListener(_onAnimationStatus);
+    _animationController.stop();
+    _animationController.reset();
   }
 
-  ///5, 更新新聞數據並重新啟動滾動
+  ///3, 更新新聞數據並重新啟動滾動（防抖版本）
   void _updateNews(List<String> newTexts) {
     if (newTexts.isEmpty) {
       _newsTexts = ['暫無新聞數據'];
@@ -181,7 +151,7 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
       _newsTexts = newTexts;
     }
 
-    // 检查内容是否真的发生了变化
+    // 檢查內容是否真的發生了變化
     if (_newsTexts.length == _previousNewsTexts.length &&
         !_newsTexts
             .asMap()
@@ -192,28 +162,29 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
 
     _previousNewsTexts = List.from(_newsTexts);
 
-    // 🔧 修復：增加防抖延遲，避免 API 返回時頻繁重置動畫
-    Future.delayed(const Duration(milliseconds: 200), () {
+    // 取消之前的防抖 Timer
+    _debounceTimer?.cancel();
+    _layoutTimer?.cancel();
+
+    // 第一層防抖：等待 300ms 讓數據穩定
+    _debounceTimer = Timer(const Duration(milliseconds: 300), () {
       if (!mounted) return;
 
-      _totalContentWidth = _calculateTotalWidth(_newsTexts);
-      
       setState(() {});
 
-      // 🔧 修復：增加足夠的延遲確保 ListView 完成 layout
-      // 這是解決「API 返回後速度變快」的關鍵
+      // 等待 ListView 完成 layout 後再重啟滾動
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        
-        // 先停止現有動畫
+
+        // 停止現有動畫
         _stopScrolling();
-        _controller.reset();
         if (_scrollController.hasClients) {
           _scrollController.jumpTo(0);
         }
-        
-        // 🔧 額外延遲 500ms，確保 ListView 的 maxScrollExtent 已正確計算
-        Future.delayed(const Duration(milliseconds: 500), () {
+
+        // 第二層防抖：等待 500ms，確保 maxScrollExtent 穩定
+        _layoutTimer?.cancel();
+        _layoutTimer = Timer(const Duration(milliseconds: 500), () {
           if (mounted && !_isPaused) {
             _startScrolling();
           }
@@ -222,7 +193,7 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
     });
   }
 
-  ///6, 根据Provider状态处理滚动控制
+  ///5, 根據 Provider 狀態處理滾動控制
   void _handleProviderPauseState(bool isProviderPaused) {
     if (isProviderPaused && !_isPaused) {
       _pauseScrolling();
@@ -231,29 +202,30 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
     }
   }
 
-  ///7, 暂停滚动
+  ///6, 暫停滾動
   void _pauseScrolling() {
     _isPaused = true;
-    _controller.stop();
+    if (_isAnimating) {
+      _animationController.stop();
+    }
   }
 
-  ///8, 恢復滾動
+  ///7, 恢復滾動
   void _resumeScrolling() {
     if (_isPaused && mounted) {
       _isPaused = false;
       if (_isAnimating) {
-        _controller.forward();
+        // 從當前位置繼續播放
+        _animationController.forward();
       } else {
         _startScrolling();
       }
     }
   }
 
-  ///9, 智能确定显示项目数量
+  ///8, 智能確定顯示項目數量
   int _getItemCount() {
-    // 如果只有一条新闻（通常是网络错误提示），检查是否需要滚动
     if (_newsTexts.length == 1) {
-      // 计算單条新闻的宽度
       final textPainter = TextPainter(textDirection: TextDirection.ltr);
       textPainter.text = TextSpan(
         text: _newsTexts.first,
@@ -265,19 +237,15 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
       );
       textPainter.layout();
 
-      // 如果單条新闻宽度小于容器宽度，不需要滚动，只显示一次
       if (textPainter.width < widget.width - 160) {
-        // 减去左右边距
         return 1;
       }
-      // 如果單条新闻很长，需要重复显示来实现滚动
-      return 2;
+      return 3;
     }
-    // 如果有多条新闻，重复显示两次确保无缝循环
-    return _newsTexts.length * 2;
+    return _newsTexts.length * 3;
   }
 
-  ///10, 构建渐变遮罩，避免文字在边缘处突然出现或消失
+  ///9, 構建漸變遮罩
   Widget _buildFadeMask(Widget child) => ShaderMask(
         blendMode: BlendMode.dstIn,
         shaderCallback: (bounds) => const LinearGradient(
@@ -287,9 +255,9 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
             Colors.transparent,
             Colors.black,
             Colors.black,
-            Colors.transparent
+            Colors.transparent,
           ],
-          stops: [0.0, 0.08, 0.92, 1.0], // 调整渐变范围，让文字显示更清晰
+          stops: [0.0, 0.08, 0.92, 1.0],
         ).createShader(bounds),
         child: child,
       );
@@ -298,11 +266,12 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
   Widget build(BuildContext context) {
     return Consumer<RthkNewsProvider>(
       builder: (context, newsProvider, child) {
+        // 將副作用推遲到 build 完成後執行
         WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
           _handleProviderPauseState(newsProvider.isScrollingPaused);
+          _updateNews(newsProvider.getAllNewsDisplayTexts());
         });
-
-        _updateNews(newsProvider.getAllNewsDisplayTexts());
 
         return Container(
           height: widget.height,
@@ -317,7 +286,7 @@ class RthkNewsTickerWidgetState extends State<RthkNewsTickerWidget>
                 controller: _scrollController,
                 scrollDirection: Axis.horizontal,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: _getItemCount(), // 根據新聞數量智能決定顯示次數
+                itemCount: _getItemCount(),
                 itemBuilder: (context, index) {
                   final text = _newsTexts[index % _newsTexts.length];
                   return Container(

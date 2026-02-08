@@ -142,6 +142,31 @@ class AnnouncementPageState extends State<AnnouncementPage> {
   ///2.1，初始化RTHK新闻
   void _initializeNewsAnnouncements() {
     final rthkNewsProvider = context.read<RthkNewsProvider>();
+    
+    // 🔧 调试模式：设置网络错误回调，显示弹窗
+    rthkNewsProvider.onNetworkError = (String errorMessage) {
+      if (mounted) {
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('⚠️ RTHK新聞請求失敗'),
+            content: SingleChildScrollView(
+              child: Text(
+                errorMessage,
+                style: const TextStyle(fontSize: 12),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('確定'),
+              ),
+            ],
+          ),
+        );
+      }
+    };
+    
     // 启动RTHK新闻的定时更新
     rthkNewsProvider.fetchRthkNews();
   }

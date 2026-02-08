@@ -45,8 +45,15 @@ class RthkNewsProvider extends ChangeNotifier {
   // ⚠️ 注意：使用 API 需要能訪問 rthk9.rthk.hk（大陸需要開啟 VPN）
   static const bool _useSimulatedData = false;
 
+  // 🔧 調試開關：設為 true 時每次都強制請求，不使用緩存
+  static const bool _debugForceRefresh = true;
+
+  // 網絡錯誤回調（用於彈窗提示）
+  void Function(String errorMessage)? onNetworkError;
+
   RthkNewsProvider(this._apiClient) {
     _logger.i('🔍 RthkNewsProvider 初始化完成');
+    _logger.i('🔧 調試模式: _debugForceRefresh = $_debugForceRefresh');
     _initializeData();
     if (!_useSimulatedData) {
       _startUpdateTimer();
@@ -55,6 +62,16 @@ class RthkNewsProvider extends ChangeNotifier {
 
   ///1, 初始化数据
   Future<void> _initializeData() async {
+    // 🔧 調試模式：清空緩存，強制重新請求
+    if (_debugForceRefresh) {
+      _logger.i('🔧 調試模式：清空本地緩存');
+      _newsList = [];
+      _lastUpdateTime = null;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_storageKey);
+      await prefs.remove(_lastUpdateKey);
+    }
+
     if (_useSimulatedData) {
       _logger.i('🧪 使用模擬數據模式');
       _loadSimulatedData();
@@ -233,12 +250,17 @@ class RthkNewsProvider extends ChangeNotifier {
     }
 
     // 如果不是强制更新，检查是否需要更新
-    if (!forceUpdate && _lastUpdateTime != null) {
+    // 🔧 調試模式下跳過緩存檢查
+    if (!_debugForceRefresh && !forceUpdate && _lastUpdateTime != null) {
       final timeSinceLastUpdate = DateTime.now().difference(_lastUpdateTime!);
       if (timeSinceLastUpdate < _updateInterval) {
         _logger.i('⏭️ 距离上次更新不足30分鈡，跳过更新');
         return;
       }
+    }
+    
+    if (_debugForceRefresh) {
+      _logger.i('🔧 調試模式：強制請求新數據');
     }
 
     if (_isLoading) {
@@ -292,6 +314,12 @@ class RthkNewsProvider extends ChangeNotifier {
       _hasError = true;
       _errorMessage = e.toString();
       _logger.e('❌ 获取RTHK新闻失败: $e');
+
+      // 🔧 調試模式：觸發網絡錯誤回調（彈窗提示）
+      if (_debugForceRefresh) {
+        _logger.e('🔧 調試模式：觸發網絡錯誤回調');
+        onNetworkError?.call('RTHK新聞請求失敗:\n$e');
+      }
 
       // 检查缓存中是否有数据
       if (_newsList.isEmpty) {

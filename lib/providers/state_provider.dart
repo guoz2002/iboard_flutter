@@ -352,8 +352,17 @@ class CarouselStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // 🔧 調試開關：禁用全屏廣告模式
+  static const bool _debugDisableFullscreenAd = false;
+
   ///4， 切換到全屏廣告狀態
   void enterFullscreenAd() {
+    // 🔧 調試模式：跳過全屏廣告
+    if (_debugDisableFullscreenAd) {
+      debugPrint('[StateProvider] 🔧 調試模式：跳過全屏廣告');
+      return;
+    }
+
     if (_currentState.canTransitionTo(AppState.fullscreenAd)) {
       // 🔧 修复：设置状态切换标志，防止竞争条件
       _isStateTransitioning = true;
